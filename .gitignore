@@ -1,0 +1,10 @@
+# Extension package
+*.vsix
+
+# Node modules (dépendances)
+node_modules/
+
+# Fichiers de compilation Pascal (au cas où tu en as dans ton dossier)
+*.o
+*.ppu
+*.exe

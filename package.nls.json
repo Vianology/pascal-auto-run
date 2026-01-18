@@ -1,0 +1,9 @@
+{
+  "command.run.title": "Compile & Run Pascal",
+  "command.selectCompiler.title": "Select Pascal Compiler Path",
+  "config.compilerPath.description": "Full path to the Free Pascal Compiler (fpc.exe). Leave empty to use system PATH.",
+  "config.compilerOptions.description": "Additional compiler options (e.g., -Mobjfpc -Sh)",
+  "config.cleanupAfterCompile.description": "Automatically delete .o and .ppu files after compilation",
+  "config.pauseAfterExecution.description": "Pause terminal after program execution (wait for key press)",
+  "config.saveBeforeCompile.description": "Automatically save the file before compiling"
+}

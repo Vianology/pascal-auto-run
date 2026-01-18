@@ -1,0 +1,9 @@
+{
+  "command.run.title": "Compiler et Exécuter Pascal",
+  "command.selectCompiler.title": "Sélectionner le chemin du compilateur Pascal",
+  "config.compilerPath.description": "Chemin complet vers le compilateur Free Pascal (fpc.exe). Laisser vide pour utiliser le PATH système.",
+  "config.compilerOptions.description": "Options supplémentaires du compilateur (ex: -Mobjfpc -Sh)",
+  "config.cleanupAfterCompile.description": "Supprimer automatiquement les fichiers .o et .ppu après la compilation",
+  "config.pauseAfterExecution.description": "Mettre en pause le terminal après l'exécution du programme (attendre une touche)",
+  "config.saveBeforeCompile.description": "Sauvegarder automatiquement le fichier avant la compilation"
+}

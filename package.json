@@ -1,0 +1,126 @@
+{
+  "name": "pascal-auto-run",
+  "displayName": "Pascal Auto Run",
+  "description": "Compile and run Pascal files with one click",
+  "version": "1.0.0",
+  "publisher": "Vianology",
+  "icon": "icon.png",
+  "author": {
+    "name": "AGBENONWOSSI Kokou Kplolali",
+    "email": "oliviano.dev@gmail.com",
+    "url": "https://github.com/Vianology"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Vianology/pascal-auto-run"
+  },
+  "icon": "icon.png",
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "keywords": [
+    "pascal",
+    "freepascal",
+    "fpc",
+    "compile",
+    "run",
+    "delphi"
+  ],
+  "activationEvents": [
+    "onLanguage:pascal",
+    "onCommand:pascal-auto-run.run"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "pascal-auto-run.run",
+        "title": "%command.run.title%",
+        "category": "Pascal",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "pascal-auto-run.selectCompiler",
+        "title": "%command.selectCompiler.title%",
+        "category": "Pascal"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "pascal-auto-run.run",
+          "when": "resourceLangId == pascal",
+          "group": "navigation"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "pascal-auto-run.run",
+          "when": "resourceLangId == pascal",
+          "group": "pascal"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Pascal Auto Run",
+      "properties": {
+        "pascal-auto-run.compilerPath": {
+          "type": "string",
+          "default": "",
+          "description": "%config.compilerPath.description%",
+          "scope": "window"
+        },
+        "pascal-auto-run.compilerOptions": {
+          "type": "string",
+          "default": "",
+          "description": "%config.compilerOptions.description%",
+          "scope": "window"
+        },
+        "pascal-auto-run.cleanupAfterCompile": {
+          "type": "boolean",
+          "default": false,
+          "description": "%config.cleanupAfterCompile.description%",
+          "scope": "window"
+        },
+        "pascal-auto-run.pauseAfterExecution": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.pauseAfterExecution.description%",
+          "scope": "window"
+        },
+        "pascal-auto-run.saveBeforeCompile": {
+          "type": "boolean",
+          "default": true,
+          "description": "%config.saveBeforeCompile.description%",
+          "scope": "window"
+        }
+      }
+    },
+    "languages": [
+      {
+        "id": "pascal",
+        "extensions": [
+          ".pas",
+          ".pp",
+          ".inc",
+          ".lpr"
+        ]
+      }
+    ]
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "pretest": "npm run lint",
+    "test": "node ./test/runTest.js"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.75.0",
+    "@types/node": "^18.x",
+    "eslint": "^8.x"
+  }
+}
