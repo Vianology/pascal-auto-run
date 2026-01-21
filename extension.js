@@ -6,51 +6,82 @@ const https = require('https');
 const os = require('os');
 
 let outputChannel;
+let isCompiling = false;
 
 /**
  * Send telemetry event to Google Analytics 4
  */
 function sendTelemetry(eventName, params = {}) {
-    const measurementId = 'G-4TC9Z8LPDR';
-    const apiSecret = 'jvuciaIFQ8-LjWpasm_A5w';
-    
-    const payload = JSON.stringify({
-        client_id: vscode.env.machineId,
-        events: [{
-            name: eventName,
-            params: {
-                engagement_time_msec: '100',
-                session_id: Date.now(),
-                ...params
-            }
-        }]
-    });
+    try {
+        const measurementId = 'G-4TC9Z8LPDR';
+        const apiSecret = 'jvuciaIFQ8-LjWpasm_A5w';
+        
+        const payload = JSON.stringify({
+            client_id: vscode.env.machineId,
+            events: [{
+                name: eventName,
+                params: {
+                    engagement_time_msec: '100',
+                    session_id: Date.now(),
+                    ...params
+                }
+            }]
+        });
 
-    const options = {
-        hostname: 'www.google-analytics.com',
-        path: `/mp/collect?measurement_id=${measurementId}&api_secret=${apiSecret}`,
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Content-Length': payload.length
-        }
-    };
+        const options = {
+            hostname: 'www.google-analytics.com',
+            path: `/mp/collect?measurement_id=${measurementId}&api_secret=${apiSecret}`,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': payload.length
+            },
+            timeout: 5000
+        };
 
-    const req = https.request(options, () => {});
-    req.on('error', () => {});
-    req.write(payload);
-    req.end();
+        const req = https.request(options, () => {});
+        req.on('error', () => {});
+        req.on('timeout', () => { req.destroy(); });
+        req.write(payload);
+        req.end();
+    } catch (error) {
+        // Silently ignore telemetry errors
+    }
 }
 
 /**
- * Check if a file exists and is executable
+ * Check if a file exists and is accessible
+ */
+function fileExists(filePath) {
+    try {
+        return fs.existsSync(filePath) && fs.statSync(filePath).isFile();
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * Check if a file is executable
  */
 function isExecutable(filePath) {
     try {
         fs.accessSync(filePath, fs.constants.X_OK);
         return true;
     } catch {
-        return fs.existsSync(filePath);
+        return fileExists(filePath);
+    }
+}
+
+/**
+ * Check if file can be written
+ */
+function canWrite(filePath) {
+    try {
+        const dir = path.dirname(filePath);
+        fs.accessSync(dir, fs.constants.W_OK);
+        return true;
+    } catch {
+        return false;
     }
 }
 
@@ -62,10 +93,9 @@ function findCompilerInCommonPaths() {
     const commonPaths = [];
 
     if (isWindows) {
-        // Windows common paths
-        const drives = ['C:', 'D:', 'E:'];
-        const versions = ['3.2.2', '3.2.0', '3.0.4', '3.0.0'];
-        const archs = ['i386-win32', 'x86_64-win64'];
+        const drives = ['C:', 'D:', 'E:', 'F:'];
+        const versions = ['3.2.2', '3.2.0', '3.0.4', '3.0.0', '2.6.4'];
+        const archs = ['i386-win32', 'x86_64-win64', 'i386-win64'];
         
         drives.forEach(drive => {
             versions.forEach(version => {
@@ -75,7 +105,6 @@ function findCompilerInCommonPaths() {
             });
         });
         
-        // Also check Program Files
         const programFiles = [
             process.env['ProgramFiles'],
             process.env['ProgramFiles(x86)'],
@@ -83,17 +112,21 @@ function findCompilerInCommonPaths() {
         ].filter(Boolean);
         
         programFiles.forEach(pf => {
-            commonPaths.push(path.join(pf, 'FreePascal', 'bin', 'fpc.exe'));
+            commonPaths.push(
+                path.join(pf, 'FreePascal', 'bin', 'fpc.exe'),
+                path.join(pf, 'FPC', 'bin', 'fpc.exe')
+            );
         });
     } else {
-        // Unix/macOS common paths
         commonPaths.push(
             '/usr/bin/fpc',
             '/usr/local/bin/fpc',
             '/opt/fpc/bin/fpc',
+            '/opt/local/bin/fpc',
             path.join(os.homedir(), '.fpc', 'bin', 'fpc'),
             '/opt/homebrew/bin/fpc',
-            '/usr/local/opt/fpc/bin/fpc'
+            '/usr/local/opt/fpc/bin/fpc',
+            '/snap/bin/fpc'
         );
     }
 
@@ -111,14 +144,15 @@ function findCompilerInCommonPaths() {
  */
 function commandExists(command) {
     return new Promise((resolve) => {
-        const testCmd = process.platform === 'win32' 
+        const isWindows = process.platform === 'win32';
+        const testCmd = isWindows 
             ? `where ${command} 2>nul`
-            : `which ${command} 2>/dev/null`;
+            : `command -v ${command} 2>/dev/null`;
         
-        exec(testCmd, (error, stdout) => {
+        exec(testCmd, { timeout: 5000 }, (error, stdout) => {
             if (!error && stdout.trim()) {
-                const firstPath = stdout.trim().split('\n')[0];
-                resolve(firstPath);
+                const firstPath = stdout.trim().split('\n')[0].trim();
+                resolve(firstPath || null);
             } else {
                 resolve(null);
             }
@@ -131,12 +165,16 @@ function commandExists(command) {
  */
 function verifyCompiler(compilerPath) {
     return new Promise((resolve) => {
-        exec(`"${compilerPath}" -h`, { timeout: 5000 }, (error, stdout, stderr) => {
+        const quotedPath = process.platform === 'win32' 
+            ? `"${compilerPath}"`
+            : `'${compilerPath.replace(/'/g, "'\\''")}'`;
+        
+        exec(`${quotedPath} -h`, { timeout: 10000 }, (error, stdout, stderr) => {
             if (error) {
                 resolve(false);
             } else {
-                const output = stdout + stderr;
-                resolve(output.toLowerCase().includes('free pascal'));
+                const output = (stdout + stderr).toLowerCase();
+                resolve(output.includes('free pascal') || output.includes('fpc'));
             }
         });
     });
@@ -154,44 +192,50 @@ async function getCompilerPath() {
         if (isExecutable(compilerPath)) {
             const isValid = await verifyCompiler(compilerPath);
             if (isValid) {
-                outputChannel.appendLine(`Using configured compiler: ${compilerPath}`);
+                outputChannel.appendLine(`✓ Using configured compiler: ${compilerPath}`);
                 return compilerPath;
             } else {
-                outputChannel.appendLine(`Configured compiler is invalid: ${compilerPath}`);
+                outputChannel.appendLine(`✗ Configured compiler is invalid: ${compilerPath}`);
             }
         } else {
-            outputChannel.appendLine(`Configured compiler not found: ${compilerPath}`);
+            outputChannel.appendLine(`✗ Configured compiler not found: ${compilerPath}`);
         }
     }
 
     // Strategy 2: Check system PATH
-    outputChannel.appendLine('Searching for fpc in system PATH...');
+    outputChannel.appendLine('⟳ Searching for fpc in system PATH...');
     const pathCompiler = await commandExists('fpc');
     if (pathCompiler) {
         const isValid = await verifyCompiler(pathCompiler);
         if (isValid) {
-            outputChannel.appendLine(`Found compiler in PATH: ${pathCompiler}`);
-            // Save to config for future use
-            await config.update('compilerPath', pathCompiler, vscode.ConfigurationTarget.Global);
+            outputChannel.appendLine(`✓ Found compiler in PATH: ${pathCompiler}`);
+            try {
+                await config.update('compilerPath', pathCompiler, vscode.ConfigurationTarget.Global);
+            } catch (error) {
+                outputChannel.appendLine(`⚠ Could not save compiler path: ${error.message}`);
+            }
             return pathCompiler;
         }
     }
 
     // Strategy 3: Check common installation paths
-    outputChannel.appendLine('Searching in common installation paths...');
+    outputChannel.appendLine('⟳ Searching in common installation paths...');
     const foundCompiler = findCompilerInCommonPaths();
     if (foundCompiler) {
         const isValid = await verifyCompiler(foundCompiler);
         if (isValid) {
-            outputChannel.appendLine(`Found compiler at: ${foundCompiler}`);
-            // Save to config
-            await config.update('compilerPath', foundCompiler, vscode.ConfigurationTarget.Global);
+            outputChannel.appendLine(`✓ Found compiler at: ${foundCompiler}`);
+            try {
+                await config.update('compilerPath', foundCompiler, vscode.ConfigurationTarget.Global);
+            } catch (error) {
+                outputChannel.appendLine(`⚠ Could not save compiler path: ${error.message}`);
+            }
             return foundCompiler;
         }
     }
 
     // Strategy 4: Ask user to select manually
-    outputChannel.appendLine('Compiler not found automatically.');
+    outputChannel.appendLine('✗ Compiler not found automatically');
     return await promptUserForCompiler();
 }
 
@@ -205,6 +249,7 @@ async function promptUserForCompiler() {
     
     const choice = await vscode.window.showErrorMessage(
         message,
+        { modal: false },
         selectButton,
         downloadButton
     );
@@ -217,7 +262,7 @@ async function promptUserForCompiler() {
     if (choice === selectButton) {
         const filters = process.platform === 'win32' 
             ? { 'Executable': ['exe'], 'All Files': ['*'] }
-            : { 'All Files': ['*'] };
+            : { 'Executable': ['*'], 'All Files': ['*'] };
 
         const uris = await vscode.window.showOpenDialog({
             canSelectFiles: true,
@@ -230,7 +275,13 @@ async function promptUserForCompiler() {
         if (uris && uris[0]) {
             const selectedPath = uris[0].fsPath;
             
-            // Verify the selected compiler
+            if (!fileExists(selectedPath)) {
+                vscode.window.showErrorMessage(
+                    vscode.l10n.t('Selected file does not exist.')
+                );
+                return null;
+            }
+
             const isValid = await verifyCompiler(selectedPath);
             if (!isValid) {
                 vscode.window.showErrorMessage(
@@ -239,15 +290,14 @@ async function promptUserForCompiler() {
                 return null;
             }
 
-            // Save to global configuration
             try {
                 const config = vscode.workspace.getConfiguration('pascal-auto-run');
                 await config.update('compilerPath', selectedPath, vscode.ConfigurationTarget.Global);
                 
-                // Verify save with retry
+                // Verify save with multiple retries
                 let savedPath = '';
-                for (let i = 0; i < 3; i++) {
-                    await new Promise(resolve => setTimeout(resolve, 100));
+                for (let i = 0; i < 5; i++) {
+                    await new Promise(resolve => setTimeout(resolve, 200));
                     const verifyConfig = vscode.workspace.getConfiguration('pascal-auto-run');
                     savedPath = verifyConfig.get('compilerPath', '');
                     if (savedPath === selectedPath) break;
@@ -257,15 +307,16 @@ async function promptUserForCompiler() {
                     vscode.window.showInformationMessage(
                         vscode.l10n.t('Compiler path saved successfully!')
                     );
-                    outputChannel.appendLine(`Compiler saved: ${selectedPath}`);
+                    outputChannel.appendLine(`✓ Compiler saved: ${selectedPath}`);
                     return selectedPath;
                 } else {
-                    throw new Error('Configuration verification failed');
+                    throw new Error('Configuration verification failed after retries');
                 }
             } catch (error) {
                 vscode.window.showErrorMessage(
                     vscode.l10n.t('Failed to save compiler path: {0}', error.message)
                 );
+                outputChannel.appendLine(`✗ Save failed: ${error.message}`);
                 return null;
             }
         }
@@ -275,9 +326,50 @@ async function promptUserForCompiler() {
 }
 
 /**
+ * Kill running processes with the same name as executable
+ */
+function killProcessByName(exeName) {
+    return new Promise((resolve) => {
+        const baseName = path.basename(exeName, '.exe');
+        const isWindows = process.platform === 'win32';
+        
+        if (isWindows) {
+            exec(`taskkill /F /IM "${baseName}.exe" 2>nul`, { timeout: 5000 }, () => {
+                resolve();
+            });
+        } else {
+            exec(`pkill -9 "${baseName}" 2>/dev/null`, { timeout: 5000 }, () => {
+                resolve();
+            });
+        }
+    });
+}
+
+/**
+ * Delete file with retries
+ */
+async function deleteFileWithRetry(filePath, maxRetries = 5) {
+    for (let i = 0; i < maxRetries; i++) {
+        try {
+            if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
+                return true;
+            }
+            return true;
+        } catch (error) {
+            if (i === maxRetries - 1) {
+                return false;
+            }
+            await new Promise(resolve => setTimeout(resolve, 200 * (i + 1)));
+        }
+    }
+    return false;
+}
+
+/**
  * Clean up compilation artifacts
  */
-function cleanupFiles(filePath) {
+async function cleanupFiles(filePath) {
     const config = vscode.workspace.getConfiguration('pascal-auto-run');
     const shouldCleanup = config.get('cleanupAfterCompile', false);
 
@@ -289,18 +381,18 @@ function cleanupFiles(filePath) {
     const extensions = ['.o', '.ppu', '.compiled'];
     const filesToDelete = extensions.map(ext => path.join(dir, baseName + ext));
 
-    setTimeout(() => {
-        filesToDelete.forEach(file => {
+    setTimeout(async () => {
+        for (const file of filesToDelete) {
             if (fs.existsSync(file)) {
-                try {
-                    fs.unlinkSync(file);
-                    outputChannel.appendLine(`Cleaned up: ${file}`);
-                } catch (error) {
-                    outputChannel.appendLine(`Failed to delete ${file}: ${error.message}`);
+                const deleted = await deleteFileWithRetry(file, 3);
+                if (deleted) {
+                    outputChannel.appendLine(`✓ Cleaned up: ${file}`);
+                } else {
+                    outputChannel.appendLine(`⚠ Could not delete: ${file}`);
                 }
             }
-        });
-    }, 2000);
+        }
+    }, 3000);
 }
 
 /**
@@ -308,10 +400,8 @@ function cleanupFiles(filePath) {
  */
 function escapePathForShell(filePath, isWindows) {
     if (isWindows) {
-        // PowerShell: use single quotes and escape internal single quotes
         return `'${filePath.replace(/'/g, "''")}'`;
     } else {
-        // Bash: use double quotes and escape special chars
         return `"${filePath.replace(/(["`$\\])/g, '\\$1')}"`;
     }
 }
@@ -323,33 +413,56 @@ function createWindowsCommand(compilerPath, compilerOptions, filePath, exePath, 
     const compiler = escapePathForShell(compilerPath, true);
     const file = escapePathForShell(filePath, true);
     const exe = escapePathForShell(exePath, true);
+    const baseName = path.basename(exePath, '.exe');
     
     const scriptLines = [
         `cls`,
+        // Kill any running instance
+        `Get-Process -Name '${baseName}' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue`,
+        `Start-Sleep -Milliseconds 200`,
+        // Delete old executable with retries
+        `for ($i = 0; $i -lt 5; $i++) {`,
+        `  if (Test-Path ${exe}) {`,
+        `    try {`,
+        `      Remove-Item ${exe} -Force -ErrorAction Stop`,
+        `      break`,
+        `    } catch {`,
+        `      if ($i -eq 4) { Write-Host 'Warning: Could not delete old executable' -ForegroundColor Yellow }`,
+        `      Start-Sleep -Milliseconds 200`,
+        `    }`,
+        `  } else { break }`,
+        `}`,
+        // Compile
         `& ${compiler} ${compilerOptions} ${file}`,
-        `if ($LASTEXITCODE -eq 0) {`,
-        `  Write-Host ''`,
-        `  Write-Host 'Compilation successful! Running...' -ForegroundColor Green`,
-        `  Write-Host ''`,
-        `  & ${exe}`,
+        `$compileResult = $LASTEXITCODE`,
+        `if ($compileResult -eq 0) {`,
+        `  if (Test-Path ${exe}) {`,
+        `    Write-Host ''`,
+        `    Write-Host 'Compilation successful! Running...' -ForegroundColor Green`,
+        `    Write-Host ''`,
+        `    & ${exe}`,
+        `    $runResult = $LASTEXITCODE`,
     ];
 
     if (pauseAfterExecution) {
         scriptLines.push(
-            `  Write-Host ''`,
-            `  Write-Host 'Press any key to continue...' -ForegroundColor Yellow`,
-            `  $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')`
+            `    Write-Host ''`,
+            `    Write-Host 'Press any key to continue...' -ForegroundColor Yellow`,
+            `    $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')`
         );
     }
 
     scriptLines.push(
+        `  } else {`,
+        `    Write-Host ''`,
+        `    Write-Host 'Error: Executable was not created!' -ForegroundColor Red`,
+        `  }`,
         `} else {`,
         `  Write-Host ''`,
         `  Write-Host 'Compilation failed!' -ForegroundColor Red`,
         `}`
     );
 
-    // Create a PowerShell script block that won't echo the command
     return `Invoke-Command -ScriptBlock { ${scriptLines.join('; ')} }`;
 }
 
@@ -360,35 +473,41 @@ function createUnixCommands(compilerPath, compilerOptions, filePath, exePath, pa
     const compiler = escapePathForShell(compilerPath, false);
     const file = escapePathForShell(filePath, false);
     const exe = escapePathForShell(exePath, false);
+    const baseName = path.basename(exePath);
     
     const commands = [
         `clear`,
-        `echo "=== Compiling Pascal program ==="`,
+        `pkill -9 "${baseName}" 2>/dev/null || true`,
+        `sleep 0.2`,
+        `rm -f ${exe} 2>/dev/null || true`,
+        `echo "Compiling..."`,
         `${compiler} ${compilerOptions} ${file}`,
-        `EXIT_CODE=$?`,
-        `if [ $EXIT_CODE -eq 0 ]; then`,
-        `  echo ""`,
-        `  echo "=== Compilation successful! Running program ==="`,
-        `  echo ""`,
-        `  chmod +x ${exe}`,
-        `  ${exe}`,
-        `  PROGRAM_EXIT=$?`,
-        `  echo ""`,
-        `  echo "=== Program exited with code: $PROGRAM_EXIT ==="`,
+        `COMPILE_RESULT=$?`,
+        `if [ $COMPILE_RESULT -eq 0 ]; then`,
+        `  if [ -f ${exe} ]; then`,
+        `    echo ""`,
+        `    echo "Compilation successful! Running..."`,
+        `    echo ""`,
+        `    chmod +x ${exe}`,
+        `    ${exe}`,
+        `    RUN_RESULT=$?`,
     ];
 
     if (pauseAfterExecution) {
         commands.push(
-            `  echo ""`,
-            `  read -p "Press Enter to continue..." -r`
+            `    echo ""`,
+            `    read -p "Press Enter to continue..." -r`
         );
     }
 
     commands.push(
+        `  else`,
+        `    echo ""`,
+        `    echo "Error: Executable was not created!"`,
+        `  fi`,
         `else`,
         `  echo ""`,
-        `  echo "=== Compilation failed! ==="`,
-        `  echo "Exit code: $EXIT_CODE"`,
+        `  echo "Compilation failed!"`,
         `fi`
     );
 
@@ -396,9 +515,42 @@ function createUnixCommands(compilerPath, compilerOptions, filePath, exePath, pa
 }
 
 /**
+ * Validate Pascal file
+ */
+function validatePascalFile(filePath) {
+    if (!fileExists(filePath)) {
+        return { valid: false, error: 'File does not exist' };
+    }
+
+    const fileExt = path.extname(filePath).toLowerCase();
+    if (!['.pas', '.pp', '.inc', '.lpr'].includes(fileExt)) {
+        return { valid: false, error: 'Not a Pascal file (.pas, .pp, .inc, .lpr)' };
+    }
+
+    const dir = path.dirname(filePath);
+    if (!canWrite(dir)) {
+        return { valid: false, error: 'Directory is not writable' };
+    }
+
+    // Check for problematic characters in path
+    if (filePath.includes('\n') || filePath.includes('\r')) {
+        return { valid: false, error: 'File path contains invalid characters' };
+    }
+
+    return { valid: true };
+}
+
+/**
  * Compile and run Pascal file
  */
 async function compileAndRun() {
+    if (isCompiling) {
+        vscode.window.showWarningMessage(
+            vscode.l10n.t('A compilation is already in progress')
+        );
+        return;
+    }
+
     const editor = vscode.window.activeTextEditor;
     
     if (!editor) {
@@ -408,109 +560,140 @@ async function compileAndRun() {
 
     const document = editor.document;
     const filePath = document.fileName;
-    const fileExt = path.extname(filePath).toLowerCase();
 
-    // Validate Pascal file
-    if (!['.pas', '.pp', '.inc', '.lpr'].includes(fileExt)) {
-        vscode.window.showWarningMessage(
-            vscode.l10n.t('Current file is not a Pascal file (.pas, .pp, .inc, .lpr)')
+    // Validate file
+    const validation = validatePascalFile(filePath);
+    if (!validation.valid) {
+        vscode.window.showErrorMessage(
+            vscode.l10n.t('Cannot compile: {0}', validation.error)
         );
         return;
     }
 
-    // Save before compile if configured
-    const config = vscode.workspace.getConfiguration('pascal-auto-run');
-    const saveBeforeCompile = config.get('saveBeforeCompile', true);
-    
-    if (saveBeforeCompile && document.isDirty) {
-        const saved = await document.save();
-        if (!saved) {
-            vscode.window.showErrorMessage(vscode.l10n.t('Failed to save file'));
+    isCompiling = true;
+
+    try {
+        // Save before compile if configured
+        const config = vscode.workspace.getConfiguration('pascal-auto-run');
+        const saveBeforeCompile = config.get('saveBeforeCompile', true);
+        
+        if (saveBeforeCompile && document.isDirty) {
+            const saved = await document.save();
+            if (!saved) {
+                vscode.window.showErrorMessage(vscode.l10n.t('Failed to save file'));
+                return;
+            }
+        }
+
+        // Show output channel
+        outputChannel.show(true);
+        outputChannel.clear();
+        outputChannel.appendLine('═'.repeat(60));
+        outputChannel.appendLine('Pascal Auto Run - Compilation Started');
+        outputChannel.appendLine('═'.repeat(60));
+        outputChannel.appendLine(`File: ${filePath}`);
+        outputChannel.appendLine(`Platform: ${process.platform} (${os.arch()})`);
+        outputChannel.appendLine(`Time: ${new Date().toLocaleString()}`);
+        outputChannel.appendLine('');
+
+        // Get and verify compiler
+        const compilerPath = await getCompilerPath();
+        if (!compilerPath) {
+            outputChannel.appendLine('✗ Compilation aborted: No compiler available');
             return;
         }
-    }
 
-    // Get and verify compiler
-    outputChannel.show(true);
-    outputChannel.clear();
-    outputChannel.appendLine('='.repeat(60));
-    outputChannel.appendLine('Pascal Auto Run');
-    outputChannel.appendLine('='.repeat(60));
-    outputChannel.appendLine(`File: ${filePath}`);
-    outputChannel.appendLine(`Platform: ${process.platform}`);
-    outputChannel.appendLine('');
+        // Send telemetry
+        sendTelemetry('compile_clicked', {
+            platform: process.platform,
+            file_extension: path.extname(filePath)
+        });
 
-    const compilerPath = await getCompilerPath();
-    if (!compilerPath) {
-        outputChannel.appendLine('ERROR: No compiler available');
-        return;
-    }
+        outputChannel.appendLine(`Compiler: ${compilerPath}`);
 
-    // Send telemetry
-    sendTelemetry('compile_clicked', {
-        platform: process.platform,
-        file_extension: fileExt
-    });
+        const dir = path.dirname(filePath);
+        const baseName = path.basename(filePath, path.extname(filePath));
+        const exePath = process.platform === 'win32' 
+            ? path.join(dir, `${baseName}.exe`)
+            : path.join(dir, baseName);
 
-    outputChannel.appendLine(`Compiler: ${compilerPath}`);
-    outputChannel.appendLine('');
+        const compilerOptions = config.get('compilerOptions', '').trim();
+        const pauseAfterExecution = config.get('pauseAfterExecution', true);
 
-    const dir = path.dirname(filePath);
-    const baseName = path.basename(filePath, path.extname(filePath));
-    const exePath = process.platform === 'win32' 
-        ? path.join(dir, `${baseName}.exe`)
-        : path.join(dir, baseName);
+        if (compilerOptions) {
+            outputChannel.appendLine(`Options: ${compilerOptions}`);
+        }
 
-    const compilerOptions = config.get('compilerOptions', '').trim();
-    const pauseAfterExecution = config.get('pauseAfterExecution', true);
+        outputChannel.appendLine('');
 
-    if (compilerOptions) {
-        outputChannel.appendLine(`Compiler options: ${compilerOptions}`);
-    }
+        // Kill any running instance and clean up
+        outputChannel.appendLine('⟳ Preparing compilation environment...');
+        await killProcessByName(exePath);
+        await new Promise(resolve => setTimeout(resolve, 300));
+        
+        if (fileExists(exePath)) {
+            const deleted = await deleteFileWithRetry(exePath, 5);
+            if (deleted) {
+                outputChannel.appendLine('✓ Old executable deleted');
+            } else {
+                outputChannel.appendLine('⚠ Could not delete old executable (may cause compilation error)');
+            }
+        }
 
-    // Create terminal with appropriate shell
-    const shellPath = process.platform === 'win32' 
-        ? 'powershell.exe'
-        : undefined;
+        outputChannel.appendLine('✓ Environment ready');
+        outputChannel.appendLine('');
+        outputChannel.appendLine('Starting compilation in terminal...');
+        outputChannel.appendLine('═'.repeat(60));
 
-    const terminal = vscode.window.createTerminal({
-        name: 'Pascal Auto Run',
-        cwd: dir,
-        shellPath: shellPath
-    });
+        // Create terminal
+        const shellPath = process.platform === 'win32' 
+            ? 'powershell.exe'
+            : undefined;
 
-    terminal.show();
+        const terminal = vscode.window.createTerminal({
+            name: 'Pascal Auto Run',
+            cwd: dir,
+            shellPath: shellPath
+        });
 
-    // Generate and send commands
-    const isWindows = process.platform === 'win32';
-    
-    if (isWindows) {
-        // Clear terminal first
-        terminal.sendText('cls');
-        const command = createWindowsCommand(
-            compilerPath,
-            compilerOptions,
-            filePath,
-            exePath,
-            pauseAfterExecution
+        terminal.show();
+
+        // Generate and send commands
+        const isWindows = process.platform === 'win32';
+        
+        if (isWindows) {
+            const command = createWindowsCommand(
+                compilerPath,
+                compilerOptions,
+                filePath,
+                exePath,
+                pauseAfterExecution
+            );
+            terminal.sendText(command);
+        } else {
+            const commands = createUnixCommands(
+                compilerPath,
+                compilerOptions,
+                filePath,
+                exePath,
+                pauseAfterExecution
+            );
+            commands.forEach(cmd => terminal.sendText(cmd));
+        }
+
+        // Schedule cleanup
+        cleanupFiles(filePath);
+
+    } catch (error) {
+        outputChannel.appendLine('');
+        outputChannel.appendLine(`✗ Unexpected error: ${error.message}`);
+        outputChannel.appendLine(`Stack: ${error.stack}`);
+        vscode.window.showErrorMessage(
+            vscode.l10n.t('Compilation error: {0}', error.message)
         );
-        terminal.sendText(command);
-    } else {
-        const commands = createUnixCommands(
-            compilerPath,
-            compilerOptions,
-            filePath,
-            exePath,
-            pauseAfterExecution
-        );
-        commands.forEach(cmd => terminal.sendText(cmd));
+    } finally {
+        isCompiling = false;
     }
-
-    outputChannel.appendLine('Commands sent to terminal');
-    outputChannel.appendLine('='.repeat(60));
-
-    // Schedule cleanup
-    cleanupFiles(filePath);
 }
 
 /**
@@ -521,9 +704,9 @@ async function selectCompiler() {
     const compilerPath = await promptUserForCompiler();
     
     if (compilerPath) {
-        outputChannel.appendLine(`Compiler selected: ${compilerPath}`);
+        outputChannel.appendLine(`✓ Compiler selected: ${compilerPath}`);
     } else {
-        outputChannel.appendLine('Compiler selection cancelled');
+        outputChannel.appendLine('✗ Compiler selection cancelled');
     }
 }
 
@@ -535,7 +718,8 @@ function activate(context) {
     
     sendTelemetry('extension_activated', {
         platform: process.platform,
-        vscode_version: vscode.version
+        vscode_version: vscode.version,
+        node_version: process.version
     });
 
     const runCommand = vscode.commands.registerCommand(
@@ -552,9 +736,14 @@ function activate(context) {
     context.subscriptions.push(selectCompilerCommand);
     context.subscriptions.push(outputChannel);
 
-    outputChannel.appendLine('Pascal Auto Run extension activated!');
-    outputChannel.appendLine(`Platform: ${process.platform}`);
-    outputChannel.appendLine(`VS Code version: ${vscode.version}`);
+    outputChannel.appendLine('═'.repeat(60));
+    outputChannel.appendLine('Pascal Auto Run Extension Activated');
+    outputChannel.appendLine('═'.repeat(60));
+    outputChannel.appendLine(`Version: 1.0.0`);
+    outputChannel.appendLine(`Platform: ${process.platform} (${os.arch()})`);
+    outputChannel.appendLine(`VS Code: ${vscode.version}`);
+    outputChannel.appendLine(`Node.js: ${process.version}`);
+    outputChannel.appendLine('═'.repeat(60));
 }
 
 /**
