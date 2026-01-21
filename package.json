@@ -2,7 +2,7 @@
   "name": "pascal-auto-run",
   "displayName": "Pascal Auto Run",
   "description": "Compile and run Pascal files with one click",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "Vianology",
   "icon": "icon.png",
   "author": {
